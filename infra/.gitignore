@@ -1,0 +1,45 @@
+# --- Terraform working files -------------------------------------------------
+**/.terraform/
+.terraform-*/
+*.tfplan
+*.tfplan.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# --- State: always remote, never committed -----------------------------------
+*.tfstate
+*.tfstate.*
+*.tflock
+
+# Provider lock files ARE committed (reproducible provider versions):
+#   stack/.terraform.lock.hcl, bootstrap/.terraform.lock.hcl
+# Module directories are only initialised for tests, so their lock files are not.
+modules/**/.terraform.lock.hcl
+
+# --- Local values and secrets ------------------------------------------------
+# Environment tfvars in envs/ are committed and must never contain secrets.
+bootstrap/terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+*.secret.tfvars
+secrets*.tfvars
+*.secrets.json
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.ppk
+credentials
+.aws/
+
+# --- Tool output -------------------------------------------------------------
+.checkov/
+results_*.sarif

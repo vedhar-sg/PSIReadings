@@ -1,0 +1,16 @@
+# Checkov findings accepted by design. Each skip states why.
+skip-check:
+  # ALB access logs only support SSE-S3, so that bucket cannot use SSE-KMS.
+  - CKV_AWS_145
+  # Access logging / replication / event notifications on log and state buckets
+  # would need further buckets; versioning + KMS + TLS-only policy are in place.
+  - CKV_AWS_18
+  - CKV_AWS_144
+  - CKV2_AWS_62
+  # Platform servers need outbound HTTPS to OutSystems services via NAT.
+  - CKV_AWS_382
+  # Secrets are placeholders filled by the operator; rotation is configured
+  # once real values exist (the RDS master secret is rotated by RDS).
+  - CKV2_AWS_57
+  # The ALB serves the public OutSystems apps; WAF is attached via a variable.
+  - CKV2_AWS_28

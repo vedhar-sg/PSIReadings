@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and replace the placeholders. Contains no secrets.
+region              = "ap-southeast-1"
+allowed_account_ids = ["111111111111"] # REPLACE with your AWS account ID
+state_bucket_name   = "REPLACE-ME-outsystems-tfstate"
+github_repository   = "REPLACE-OWNER/REPLACE-REPO"
+
+# Set to false if these already exist in the account.
+create_autoscaling_service_linked_role = true
+create_github_oidc_provider            = true
+
+# Legacy DynamoDB locking (off: Terraform >= 1.10 locks natively in S3).
+create_dynamodb_lock_table = false

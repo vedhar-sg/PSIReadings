@@ -1,0 +1,191 @@
+# Terraform CI/CD for the OutSystems 11 AWS infrastructure in infra/.
+#
+# Every PR and push   -> validate: fmt, validate, terraform test (all modules and
+#                        every environment), tflint, Checkov, terraform-docs drift.
+# Pull request        -> plan for every environment (read-only role), shown in
+#                        the job summary and uploaded as an artifact.
+# Push to main        -> plan + apply, one environment at a time, each gated by
+#                        its GitHub Environment (configure required reviewers).
+# workflow_dispatch   -> plan + apply a single chosen environment.
+#
+# Authentication is GitHub OIDC only; no AWS keys are stored in GitHub.
+# Variables to configure (Settings > Secrets and variables > Variables):
+#   repository : AWS_PLAN_ROLE_ARN_<ENV> (or AWS_PLAN_ROLE_ARN for all envs)
+#   environment: AWS_APPLY_ROLE_ARN in each of dev, test, lifetime, prod
+name: infra-terraform
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-terraform.yml"
+      - ".pre-commit-config.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-terraform.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to plan and apply"
+        required: true
+        type: choice
+        options: [dev, test, lifetime, prod]
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.13.5"
+  TFLINT_VERSION: "v0.64.0"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: "ap-southeast-1"
+
+jobs:
+  validate:
+    name: fmt / validate / test / lint / scan / docs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Cache Terraform plugins
+        uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: tf-plugins-${{ hashFiles('infra/**/.terraform.lock.hcl') }}
+
+      - name: Configure plugin cache
+        run: |
+          mkdir -p ~/.terraform.d/plugin-cache
+          echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
+
+      - name: terraform fmt
+        run: scripts/test.sh fmt
+
+      - name: terraform validate
+        run: scripts/test.sh validate
+
+      - name: terraform test (modules + every environment)
+        run: scripts/test.sh test
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: tflint
+        run: scripts/test.sh lint
+
+      - name: Install Checkov and terraform-docs
+        run: |
+          pip install --quiet checkov
+          curl -sSLo /tmp/terraform-docs.tar.gz https://github.com/terraform-docs/terraform-docs/releases/download/v0.19.0/terraform-docs-v0.19.0-linux-amd64.tar.gz
+          tar -xzf /tmp/terraform-docs.tar.gz -C /tmp terraform-docs
+          sudo mv /tmp/terraform-docs /usr/local/bin/
+
+      - name: checkov
+        run: scripts/test.sh scan
+
+      - name: terraform-docs up to date
+        run: scripts/test.sh docs
+
+  plan:
+    name: plan (${{ matrix.env }})
+    needs: validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, test, lifetime, prod]
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars[format('AWS_PLAN_ROLE_ARN_{0}', matrix.env)] || vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: init
+        run: scripts/tf.sh ${{ matrix.env }} init -lockfile=readonly
+
+      - name: plan
+        run: |
+          scripts/tf.sh ${{ matrix.env }} plan -lock=false -no-color -out=${{ matrix.env }}.tfplan
+          scripts/tf.sh ${{ matrix.env }} show -no-color ${{ matrix.env }}.tfplan > ${{ matrix.env }}-plan.txt
+          {
+            echo "### Terraform plan: ${{ matrix.env }}"
+            echo '```'
+            tail -n 200 ${{ matrix.env }}-plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan-${{ matrix.env }}
+          path: infra/${{ matrix.env }}-plan.txt
+          retention-days: 14
+
+  apply:
+    name: apply (${{ matrix.env }})
+    needs: validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # Promote in order; a failure stops later environments.
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        env: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.environment) || '["dev","test","lifetime","prod"]') }}
+    # Manual approval: add required reviewers to each GitHub Environment.
+    environment: ${{ matrix.env }}
+    concurrency:
+      group: infra-terraform-${{ matrix.env }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: init
+        run: scripts/tf.sh ${{ matrix.env }} init -lockfile=readonly
+
+      - name: plan
+        run: scripts/tf.sh ${{ matrix.env }} plan -no-color -out=${{ matrix.env }}.tfplan
+
+      - name: apply
+        run: scripts/tf.sh ${{ matrix.env }} apply -no-color ${{ matrix.env }}.tfplan

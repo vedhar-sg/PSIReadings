@@ -1,0 +1,46 @@
+# Pre-commit hooks for the Terraform in infra/.
+#
+#   pip install pre-commit && pre-commit install
+#   pre-commit run --all-files
+#
+# The Terraform hooks need terraform, tflint, checkov and terraform-docs on
+# PATH (see infra/README.md "Tooling").
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+        files: ^infra/
+      - id: trailing-whitespace
+        files: ^infra/
+      - id: check-yaml
+        files: ^(infra/|\.github/workflows/infra-)
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
+
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+        files: ^infra/
+      - id: terraform_validate
+        files: ^infra/
+        args:
+          - --hook-config=--retry-once-with-cleanup=true
+          - --tf-init-args=-backend=false
+      - id: terraform_tflint
+        files: ^infra/
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/infra/.tflint.hcl
+      - id: terraform_checkov
+        files: ^infra/
+        args:
+          - --args=--config-file __GIT_WORKING_DIR__/infra/.checkov.yaml
+      - id: terraform_docs
+        files: ^infra/modules/
+        args:
+          - --hook-config=--path-to-file=README.md
+          - --hook-config=--add-to-existing-file=true
+          - --args=--config=__GIT_WORKING_DIR__/infra/.terraform-docs.yml

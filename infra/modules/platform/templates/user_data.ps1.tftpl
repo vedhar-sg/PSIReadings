@@ -1,0 +1,57 @@
+<powershell>
+# Bootstrap for an OutSystems 11 Platform Server instance (${role}).
+# This script never contains credentials: it only records secret ARNs, which
+# the OutSystems installation steps read at run time with the instance role.
+$ErrorActionPreference = 'Stop'
+$Root = 'C:\ProgramData\OutSystemsBootstrap'
+New-Item -ItemType Directory -Force -Path $Root | Out-Null
+Start-Transcript -Path "$Root\bootstrap.log" -Append
+
+Set-TimeZone -Id 'UTC'
+
+# IIS and .NET features required by Platform Server. The Platform Server
+# installer can also add missing prerequisites; installing them here keeps
+# golden-AMI builds and fresh launches consistent.
+$features = @(
+  'Web-Server', 'Web-Default-Doc', 'Web-Http-Errors', 'Web-Static-Content',
+  'Web-Http-Logging', 'Web-Request-Monitor', 'Web-Stat-Compression',
+  'Web-Dyn-Compression', 'Web-Filtering', 'Web-Windows-Auth',
+  'Web-Net-Ext45', 'Web-Asp-Net45', 'Web-ISAPI-Ext', 'Web-ISAPI-Filter',
+  'Web-Mgmt-Console', 'Web-Metabase', 'NET-Framework-45-ASPNET',
+  'NET-WCF-HTTP-Activation45', 'NET-WCF-TCP-PortSharing45'
+)
+Install-WindowsFeature -Name $features -IncludeManagementTools | Out-Null
+
+# Facts the OutSystems installation steps need (no secret values).
+@{
+  environment           = '${environment}'
+  role                  = '${role}'
+  region                = '${region}'
+  controller_private_ip = '${controller_private_ip}'
+  database_address      = '${database_address}'
+  database_port         = ${database_port}
+  secret_arns           = ConvertFrom-Json '${secret_arns_json}'
+} | ConvertTo-Json -Depth 4 | Set-Content -Path "$Root\environment.json" -Encoding UTF8
+
+# ---------------------------------------------------------------------------
+# OutSystems installation hook.
+# Instances launched from a golden AMI (Platform Server already installed)
+# only need to re-run the Configuration Tool silently and register with the
+# controller. Put that logic in C:\ProgramData\OutSystemsBootstrap\setup.ps1
+# when baking the AMI; it is executed here if present.
+# ---------------------------------------------------------------------------
+$setup = "$Root\setup.ps1"
+if (Test-Path $setup) {
+  & $setup -EnvironmentFile "$Root\environment.json"
+}
+
+%{ if use_lifecycle_hook ~}
+# Tell Auto Scaling this front-end is ready to receive traffic.
+$token = Invoke-RestMethod -Method Put -Uri 'http://169.254.169.254/latest/api/token' -Headers @{ 'X-aws-ec2-metadata-token-ttl-seconds' = '300' }
+$instanceId = Invoke-RestMethod -Uri 'http://169.254.169.254/latest/meta-data/instance-id' -Headers @{ 'X-aws-ec2-metadata-token' = $token }
+Complete-ASLifecycleAction -AutoScalingGroupName '${asg_name}' -LifecycleHookName '${lifecycle_hook_name}' -InstanceId $instanceId -LifecycleActionResult 'CONTINUE' -Region '${region}'
+%{ endif ~}
+
+Stop-Transcript
+</powershell>
+<persist>false</persist>
